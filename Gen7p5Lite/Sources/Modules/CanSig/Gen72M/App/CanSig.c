@@ -119,6 +119,42 @@ uint8_t CanSig_SDM_RxSignalData(CanSig_SignalID_t Signal, void *SignalDataPr)
 
     if (Signal < SGMaxNumOfSignals)
     {
+        if (FALSE != ((uint8_t) * (SignalData[Signal].frameTimeoutFlag_u8) & ((uint8_t)((uint8_t)0x01U << SignalData[Signal].timeoutflag_position_u8))))
+        {
+            retVal = SIGNAL_NA;
+        }
+        else
+        {
+            retVal = SIGNAL_RCVD;
+            SigRecOnceFlag[Signal] = TRUE;
+        }
+
+        (void)Com_ReceiveSignal((uint16_t)Signal, SignalDataPtr);
+
+        /*if timeout of message is true, then update the default values for particular signals*/
+        if (((SIGNAL_NA == retVal) && (*(SignalData[Signal].TimeoutCounter_u8) >= 3U)) || (TRUE != SigRecOnceFlag[Signal]))
+        {
+            if (signalLength_u8 <= 8U)
+            {
+
+                *(uint8_t *)SignalDataPtr = (uint8_t)0x00U;
+            }
+            else if ((9U <= signalLength_u8) && (signalLength_u8 <= 16U))
+            {
+                *(uint16_t *)SignalDataPtr = (uint16_t)0x00U;
+            }
+            else if ((17U <= signalLength_u8) && (signalLength_u8 <= 32U))
+            {
+                *(uint32_t *)SignalDataPtr = (uint32_t)0x00U;
+            }
+            else
+            {
+                /*From 33 bit signals to 64 bit*/
+                *(uint64_t *)SignalDataPtr = (uint64_t)0x00U;
+            }
+            retVal = SIGNAL_TOUT;
+            CanSig_GetDefaultSignalData(Signal, SignalDataPtr);
+        }
     }
 }
 
