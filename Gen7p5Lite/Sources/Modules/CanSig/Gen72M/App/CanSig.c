@@ -11,6 +11,12 @@
 *****************************************************************************/
 #define CANSIG_CYCLE_MS 5U
 
+/* Factors to rescaled raw CAN speed value to physical value with 1km/h resolution */
+#define CAN_SPEED_RESOLUTION 5625U
+/* CAN_SPEED_RESOLUTION_SCALING_FACTOR is already multiply by 100U - Factor to rescale 1km/h
+ * to 0.01km/h. The reason was that used resolution is to big for 32bit value */
+#define CAN_SPEED_RESOLUTION_SCALING_FACTOR 1000U
+
 /*****************************************************************************
                   Local types, enums definitions
 *****************************************************************************/
@@ -77,13 +83,44 @@ static void CanSig_KickTimers(void);
 static void ProcessTimer(CanSig_timer_t *timer, uint8_t step);
 
 static void CanSig_ValidateSpeed(void);
+static uint16_t CanSig_RecalculateSpeed(uint16_t RawSpeedInput_u16);
 static boolean_t CanSig_IsSpeedValid(void);
+
+static void CanSig_UpdateSignalValidValues(void);
 /*****************************************************************************
                   Local object definitions
 *****************************************************************************/
 static CanSig_status_t CanSig;
 
 static CanSig_1sAfterElectricVehicleStart_t is1sAfterElectricVehicleStart = {{TIMER_STOPPED, 0U}, FALSE};
+
+static uint8_t DateTimeDataRcvd_u8; // from DateTime Rx message
+static uint32_t OdometerData_u32;   // from Odo Rx message
+
+/*----------------------------------------------------------------------------
+ *
+ * FUNCTION NAME: CanSig_SDM_RxSignalData
+ *
+ * FUNCTION ARGUMENTS:
+ *    None
+ *
+ * RETURN VALUE:
+ *    None
+ *
+ * FUNCTION DESCRIPTION AND RESTRICTIONS:
+ *    Interface function to propagate CAN signal to application layer components.
+ *
+ *    Note: For Vehicle Speed and Date-Time data this API should not be called
+ *---------------------------------------------------------------------------*/
+uint8_t CanSig_SDM_RxSignalData(CanSig_SignalID_t Signal, void *SignalDataPr)
+{
+    uint8_t retVal = SIGNAL_NA;
+    uint8_t signalLength_u8;
+
+    if (Signal < SGMaxNumOfSignals)
+    {
+    }
+}
 
 /*----------------------------------------------------------------------------
  *
@@ -276,7 +313,7 @@ static void CanSig_ValidateSpeed(void)
         /* Signal SGVehSpdAvgDrvn was already validated by validating SGVehSpdAvgDrvnV in same frame */
         (void)CanSig_SDM_RxSignalData(SGEspVehSpd, &canFrameSpeed);
         CanSig_ValidatedSpeed.validatedSpeed = canFrameSpeed;
-        CanSig_ValidatedSpeed.validatedRecalculatedSpeed = CanSig_RecalculateSpeed(canFrameSpeed);
+        CanSig_ValidatedSpeed.validatedRecalculatedSpeed = CanSig_RecalculateSpeed(canFrameSpeed); // get true speed
         CanSig_ValidatedSpeed.isSpeedValid = TRUE;
     }
     else
@@ -284,4 +321,97 @@ static void CanSig_ValidateSpeed(void)
         CanSig_ValidatedSpeed.isSpeedValid = FALSE;
         CanSig_ValidatedSpeed.validatedSpeed = 0x00U;
     }
+}
+
+/*----------------------------------------------------------------------------
+ *
+ * FUNCTION NAME: CanSig_UpdateSignalValidValues
+ *
+ * FUNCTION ARGUMENTS:
+ *    None
+ *
+ * RETURN VALUE:
+ *    None
+ *
+ * FUNCTION DESCRIPTION AND RESTRICTIONS:
+ *    Update signals values only if message is received
+ *
+ *---------------------------------------------------------------------------*/
+static void CanSig_UpdateSignalValidValues(void)
+{
+    uint8_t SignalValue_u8;
+
+    uint32_t SignalValue_u32;
+
+    // boolean_t SignalValue_u2;
+
+    /*update signals value only if message is received*/
+    if (TRUE == DateTimeDataRcvd_u8)
+    {
+        if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeValid, &SignalValue_u8))
+        {
+            if ((uint8_t)FALSE == SignalValue_u8)
+            {
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeDate, &SignalValue_u8))
+                {
+                    DateTimeData.CalendarDay_u8 = SignalValue_u8;
+                }
+
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeMonth, &SignalValue_u8))
+                {
+                    DateTimeData.CalendarMonth_u8 = SignalValue_u8;
+                }
+
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeHour, &SignalValue_u8))
+                {
+                    DateTimeData.HourOfDay_u8 = SignalValue_u8;
+                }
+
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeMinute, &SignalValue_u8))
+                {
+                    DateTimeData.MinuteOfHour_u8 = SignalValue_u8;
+                }
+
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeSecond, &SignalValue_u8))
+                {
+                    DateTimeData.SecsOfMinute_u8 = SignalValue_u8;
+                }
+
+                if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGHU_LocalTimeYear, &SignalValue_u8))
+                {
+                    DateTimeData.CalendarYear_u8 = SignalValue_u8;
+                }
+            }
+        }
+    }
+
+    /*get Odometerdata from CAN530*/
+    if (TRUE == OdometerRcvd_u8)
+    {
+        if (SIGNAL_RCVD == CanSig_SDM_RxSignalData(SGIP_TotalOdometer, &SignalValue_u32))
+        {
+            OdometerData_u32 = SignalValue_u32;
+        }
+    }
+}
+
+/*----------------------------------------------------------------------------
+ *
+ * FUNCTION NAME: SBR_RecalculateSpeed()
+ *
+ * FUNCTION ARGUMENTS:
+ *    none.
+ *
+ * RETURN VALUE:
+ *    None.
+ *
+ * FUNCTION DESCRIPTION:
+ * The function provides vehicle speed value with 0.01 km per count resolution
+ *
+ *---------------------------------------------------------------------------*/
+static uint16_t CanSig_RecalculateSpeed(uint16_t RawSpeedInput_u16)
+{
+    uint16_t result = (uint16_t)(((uint32_t)RawSpeedInput_u16 * (uint32_t)CAN_SPEED_RESOLUTION) / ((uint32_t)CAN_SPEED_RESOLUTION_SCALING_FACTOR));
+
+    return result;
 }
