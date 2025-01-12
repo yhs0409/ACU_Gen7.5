@@ -63,7 +63,7 @@ typedef struct
     CanSig_timer_t recoveryTimer;
     volatile boolean_t isBusoffOccur; /* TRUE: busoff occur, FALSE: Tx succeed */
     uint8_t TxEnable;
-} CanSig_BussoffRecovery_t;
+} CanSig_BusoffRecovery_t;
 
 typedef struct
 {
@@ -78,10 +78,12 @@ typedef struct
 /*****************************************************************************
                   Local function prototypes
 *****************************************************************************/
+
+static void CanSig_BusoffRecoveryProcessing(void);
 static void CanSig_KickTimers(void);
 
 static void ProcessTimer(CanSig_timer_t *timer, uint8_t step);
-
+static void StartTimer(CanSig_timer_t *timer, uint16_t limit);
 static void CanSig_ValidateSpeed(void);
 static uint16_t CanSig_RecalculateSpeed(uint16_t RawSpeedInput_u16);
 static boolean_t CanSig_IsSpeedValid(void);
@@ -235,6 +237,113 @@ void CanSig_Cyclic(void)
     default:
         break;
     }
+}
+
+/*----------------------------------------------------------------------------
+ *
+ * FUNCTION NAME: CanSig_BusoffRecoveryProcessing()
+ *
+ * FUNCTION ARGUMENTS:
+ *    None.
+ *
+ * RETURN VALUE:
+ *    None.
+ *
+ * FUNCTION DESCRIPTION:
+ *    Process recovery from busoff
+ *---------------------------------------------------------------------------*/
+static void CanSig_BusoffRecoveryProcessing(void)
+{
+    Dem_EventStatusExtendedType IgnHighFaultStatus;
+    Dem_EventStatusExtendedType IgnLowFaultStatus;
+    static uint8 recoveryingcnt;
+
+    switch (CanSig.busoffRecovery.state)
+    {
+    case BOR_IDLE:
+        break;
+    case BOR_BUSOFF_DETECTED:
+        recoveryingcnt = 0U;
+        /* Count short recovery retries. After 9 times of consecutive bus off states move to long recovery */
+        if (BUS_OFF_QUICK_REC_LIMIT > CanSig.busoffRecovery.busoffsCountLimit)
+        {
+            CanSig.busoffRecovery.busoffsCountLimit++;
+            StartTimer(&CanSig.busoffRecovery.recoveryTimer, BUS_OFF_DELAY_SHORT);
+        }
+        else
+        {
+            StartTimer(&CanSig.busoffRecovery.recoveryTimer, BUS_OFF_DELAY_LONG);
+        }
+        /*busoff DTC shall be performed */
+        if (SHORT_RECOVERY_FOR_FAULT_REPORT <= CanSig.busoffRecovery.busoffsCountLimit)
+        {
+            Flh_ReportErrorStatus(Flh_CanBusOff_0, FLH_EVENT_STATUS_FAILED);
+        }
+        CanSig.busoffRecovery.state = BOR_TRY_TO_RECOVER;
+        (void)CanIf_SetControllerMode(CONTROLLER_ID_0, CANIF_CS_STOPPED);
+        break;
+    case BOR_TRY_TO_RECOVER:
+        if (TIMER_ELAPSED == GetTimerState(CanSig.busoffRecovery.recoveryTimer))
+        {
+            /*connect the CAN controller to network*/
+            (void)CanIf_SetControllerMode(CONTROLLER_ID_0, CANIF_CS_STARTED);
+            (void)CanSig_SetApplFrameMode(CANSIG_APPL_TX_ENABLED_RX_ENABLED);
+            CanSig.busoffRecovery.state = BOR_BUSOFF_RECOVERING;
+        }
+        break;
+    case BOR_BUSOFF_RECOVERING:
+        /*    Count 10ms */
+        if (recoveryingcnt == 2U)
+        {
+            CanSig.busoffRecovery.state = BOR_BUSOFF_RECOVERED;
+        }
+        else
+        {
+            recoveryingcnt++;
+        }
+        break;
+    case BOR_BUSOFF_RECOVERED:
+        recoveryingcnt = 0U;
+        CanSig.busoffRecovery.isBusoffDetected = FALSE;
+        if (FALSE == CanSig.busoffRecovery.isBusoffOccur)
+        {
+            CanSig.busoffRecovery.busoffsCountLimit = RESET;
+
+            /* Get Ignition Low and High fault status */
+            (void)Dem_GetEventStatus(DemConf_DemEventParameter_PmIgnPLow, &IgnLowFaultStatus);
+            (void)Dem_GetEventStatus(DemConf_DemEventParameter_PmIgnPHigh, &IgnHighFaultStatus);
+            if (((IgnLowFaultStatus & DEM_UDS_STATUS_TF) == RESET) && ((IgnHighFaultStatus & DEM_UDS_STATUS_TF) == RESET))
+            {
+                Flh_ReportErrorStatus(Flh_CanBusOff_0, FLH_EVENT_STATUS_PASSED);
+                CanSig.busoffRecovery.state = BOR_IDLE;
+            }
+        }
+        else
+        {
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/*----------------------------------------------------------------------------
+ *
+ * FUNCTION NAME: CanSig_IsBusOffPresent
+ *
+ * FUNCTION ARGUMENTS:
+ *    None
+ *
+ * RETURN VALUE:
+ *    retVal - busoff status
+ *
+ * FUNCTION DESCRIPTION AND RESTRICTIONS:
+ *    Checking BusOff status
+ *
+ *---------------------------------------------------------------------------*/
+boolean_t CanSig_IsBusOffPresent(void)
+{
+    return CanSig.busoffRecovery.isBusoffOcur;
 }
 
 /*----------------------------------------------------------------------------
